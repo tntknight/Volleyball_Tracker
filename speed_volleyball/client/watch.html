@@ -68,6 +68,16 @@
     .flash.show { opacity:.22; }
     .team-0 .flash { background:#60a5fa; }
     .team-1 .flash { background:#fbbf24; }
+
+    /* ── queue ── */
+    #queue-section { background:#0a0a0a; border-top:1px solid #1a1a1a; }
+    .queue-label { color:#333; font-size:clamp(8px,2.5vw,11px); font-weight:700; text-transform:uppercase; letter-spacing:.06em; padding:clamp(4px,1.5vh,8px) clamp(8px,3vw,14px) 4px; }
+    .queue-list { display:flex; gap:6px; padding:4px clamp(8px,3vw,14px) clamp(4px,1.5vh,8px); overflow-x:auto; scrollbar-width:none; }
+    .queue-list::-webkit-scrollbar { display:none; }
+    .queue-chip { display:flex; align-items:center; gap:5px; background:#141414; border:1px solid #222; border-radius:20px; padding:4px 10px; white-space:nowrap; flex-shrink:0; }
+    .queue-chip .pos { color:#333; font-size:clamp(8px,2.5vw,11px); font-weight:700; }
+    .queue-chip .qname { color:#64748b; font-size:clamp(9px,2.8vw,12px); font-weight:600; }
+    .queue-chip .qscore { color:#38bdf8; font-size:clamp(8px,2.5vw,11px); font-weight:700; }
   </style>
 </head>
 <body>
@@ -96,6 +106,7 @@
     <div class="title">Speed Volleyball</div>
     <div class="sub" id="waiting-sub">Connecting…</div>
   </div>
+  <div id="queue-section" style="display:none; flex-shrink:0; padding:0 clamp(6px,2vw,12px) clamp(6px,2vh,10px); overflow:hidden;"></div>
 </div>
 <div id="delta-toast"></div>
 
@@ -104,22 +115,22 @@ const HOST    = location.hostname;
 const API     = `http://${HOST}:8000`;
 const LS_KEY  = 'vb_watch_league';
 
-const statusBar  = document.getElementById('status-bar');
-const statusText = document.getElementById('status-text');
-const leagueBar  = document.getElementById('league-bar');
-const courtEl    = document.getElementById('court');
-const waitingEl  = document.getElementById('waiting');
-const waitingSub = document.getElementById('waiting-sub');
-const toast      = document.getElementById('delta-toast');
-const nameEl     = [document.getElementById('name-0'),  document.getElementById('name-1')];
-const scoreEl    = [document.getElementById('score-0'), document.getElementById('score-1')];
-const btnEl      = [document.getElementById('btn-0'),   document.getElementById('btn-1')];
-const flashEl    = [document.getElementById('flash-0'), document.getElementById('flash-1')];
+const statusBar   = document.getElementById('status-bar');
+const statusText  = document.getElementById('status-text');
+const leagueBar   = document.getElementById('league-bar');
+const courtEl     = document.getElementById('court');
+const waitingEl   = document.getElementById('waiting');
+const waitingSub  = document.getElementById('waiting-sub');
+const queueSection = document.getElementById('queue-section');
+const toast       = document.getElementById('delta-toast');
+const nameEl      = [document.getElementById('name-0'),  document.getElementById('name-1')];
+const scoreEl     = [document.getElementById('score-0'), document.getElementById('score-1')];
+const btnEl       = [document.getElementById('btn-0'),   document.getElementById('btn-1')];
+const flashEl     = [document.getElementById('flash-0'), document.getElementById('flash-1')];
 
 let toastTimer   = null;
 let lastDeltaKey = '';
 let awarding     = false;
-let lastScores   = [null, null];
 let selectedLeagueId = parseInt(localStorage.getItem(LS_KEY) || '0', 10) || null;
 let allLeagues   = [];
 
@@ -167,23 +178,29 @@ function render(data) {
   if (!active) {
     setStatus('waiting', league ? `${league.name} — waiting` : 'Waiting…');
     waitingSub.textContent = league ? `${league.name} — waiting for game` : 'Waiting for game…';
+    queueSection.style.display = 'none';
     return;
   }
 
   setStatus('active', league ? `${league.name} LIVE` : 'LIVE');
 
   state.on_court.forEach((team, i) => {
-    nameEl[i].textContent = truncate(team.name, 10);
+    nameEl[i].textContent = truncate(team.name, 14);
     nameEl[i].title = team.name;
-    if (lastScores[i] !== null && team.score !== lastScores[i]) {
-      scoreEl[i].classList.remove('bump');
-      void scoreEl[i].offsetWidth;
-      scoreEl[i].classList.add('bump');
-      setTimeout(() => scoreEl[i].classList.remove('bump'), 200);
+    const domScore = parseInt(scoreEl[i].textContent, 10);
+    if (team.score !== domScore) {
+      scoreEl[i].textContent = team.score;
+      // Animate only for increases coming from another client scoring
+      if (team.score > domScore) {
+        scoreEl[i].classList.remove('bump');
+        void scoreEl[i].offsetWidth;
+        scoreEl[i].classList.add('bump');
+        setTimeout(() => scoreEl[i].classList.remove('bump'), 200);
+      }
     }
-    scoreEl[i].textContent = team.score;
-    lastScores[i] = team.score;
   });
+
+  renderQueue(state.queue || []);
 
   const deltas = state.last_rating_deltas;
   if (deltas && deltas.length > 0) {
@@ -197,6 +214,22 @@ function render(data) {
 
 function setStatus(cls, text) { statusBar.className = cls; statusText.textContent = text; }
 function truncate(str, max)   { return str.length <= max ? str : str.slice(0, max-1) + '…'; }
+
+function renderQueue(queue) {
+  if (!queue.length) { queueSection.style.display = 'none'; return; }
+  queueSection.style.display = 'block';
+  queueSection.innerHTML =
+    `<div class="queue-label">Up next</div>` +
+    `<div class="queue-list">` +
+    queue.map((t, i) =>
+      `<div class="queue-chip">` +
+      `<span class="pos">#${i + 1}</span>` +
+      `<span class="qname">${truncate(t.name, 12)}</span>` +
+      (t.score > 0 ? `<span class="qscore">${t.score}</span>` : '') +
+      `</div>`
+    ).join('') +
+    `</div>`;
+}
 
 function showToast(deltas) {
   const winners = deltas.filter(d => d.delta > 0);
@@ -214,16 +247,24 @@ function showToast(deltas) {
 async function awardPoint(idx) {
   if (awarding || !selectedLeagueId) return;
   awarding = true;
-  btnEl[0].disabled = true; btnEl[1].disabled = true;
+
+  // Optimistic update — instant visual feedback before server responds
+  const cur = parseInt(scoreEl[idx].textContent, 10) || 0;
+  scoreEl[idx].textContent = cur + 1;
+  scoreEl[idx].classList.remove('bump');
+  void scoreEl[idx].offsetWidth;
+  scoreEl[idx].classList.add('bump');
+  setTimeout(() => scoreEl[idx].classList.remove('bump'), 200);
+
   flashEl[idx].classList.add('show');
   setTimeout(() => flashEl[idx].classList.remove('show'), 200);
+
+  // Short debounce to prevent double-taps — don't wait for server round-trip
+  setTimeout(() => { awarding = false; }, 350);
+
   try {
     await fetch(`${API}/api/leagues/${selectedLeagueId}/game/point/${idx}`, { method:'POST' });
   } catch(_) {}
-  finally {
-    awarding = false;
-    btnEl[0].disabled = false; btnEl[1].disabled = false;
-  }
 }
 
 btnEl[0].addEventListener('click', () => awardPoint(0));
