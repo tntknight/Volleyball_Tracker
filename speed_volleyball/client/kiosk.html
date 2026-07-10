@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Speed Volleyball — Sign In</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f1f5f9; min-height: 100vh; }
+    #root { min-height: 100vh; display: flex; flex-direction: column; }
+    button { cursor: pointer; border: none; border-radius: 12px; font-size: 1.25rem; font-weight: 700; transition: opacity .15s, transform .1s; }
+    button:active { transform: scale(.97); opacity: .85; }
+    input[type=text], input[type=range] { font-family: inherit; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const HOST = window.location.hostname;
+
+function useWS() {
+  const [msg, setMsg] = useState(null);
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    let ws, timer, delay = 1000;
+    function connect() {
+      ws = new WebSocket(`ws://${HOST}:8000/ws`);
+      ws.onopen  = () => { setConnected(true); delay = 1000; };
+      ws.onmessage = e => setMsg(JSON.parse(e.data));
+      ws.onclose = () => {
+        setConnected(false);
+        timer = setTimeout(() => { delay = Math.min(delay * 2, 30000); connect(); }, delay);
+      };
+    }
+    connect();
+    return () => { clearTimeout(timer); try { ws.close(); } catch(_) {} };
+  }, []);
+  return { msg, connected };
+}
+
+function RatingBar({ rating, maxRating = 10 }) {
+  const pct = Math.min(100, (rating / Math.max(maxRating, 1)) * 100);
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+      <div style={{ flex:1, height:10, background:'#1e293b', borderRadius:5, overflow:'hidden' }}>
+        <div style={{ width:`${pct}%`, height:'100%', background:'#38bdf8', borderRadius:5, transition:'width .3s' }} />
+      </div>
+      <span style={{ minWidth:36, textAlign:'right', color:'#94a3b8', fontSize:'.9rem' }}>{Number(rating).toFixed(1)}</span>
+    </div>
+  );
+}
+
+function DisconnectBanner({ connected }) {
+  if (connected) return null;
+  return <div style={{ background:'#7f1d1d', color:'#fca5a5', padding:'8px 16px', textAlign:'center', fontSize:'.9rem', position:'sticky', top:0, zIndex:10 }}>Disconnected — reconnecting…</div>;
+}
+
+// ── League pick screen ────────────────────────────────────────────────────────
+function LeagueScreen({ leagues, onSelect }) {
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:24, padding:32 }}>
+      <div style={{ textAlign:'center', marginBottom:8 }}>
+        <div style={{ fontSize:'2.5rem', fontWeight:800, color:'#38bdf8' }}>⚡ Speed Volleyball</div>
+        <div style={{ color:'#94a3b8', fontSize:'1.1rem', marginTop:8 }}>Which league are you playing in today?</div>
+      </div>
+      {leagues.map(l => (
+        <button key={l.id} onClick={() => onSelect(l)}
+          style={{ background:'#1d4ed8', color:'#fff', padding:'28px 56px', width:320, fontSize:'1.4rem' }}>
+          {l.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Home screen ───────────────────────────────────────────────────────────────
+function HomeScreen({ league, onNew, onReturning, onSwitchLeague }) {
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:24, padding:32 }}>
+      <div style={{ textAlign:'center', marginBottom:8 }}>
+        <div style={{ fontSize:'2.5rem', fontWeight:800, color:'#38bdf8' }}>⚡ Speed Volleyball</div>
+        <div style={{ marginTop:10 }}>
+          <span style={{ background:'#1e3a5f', color:'#93c5fd', padding:'6px 18px', borderRadius:20, fontWeight:700, fontSize:'1.1rem' }}>{league.name}</span>
+        </div>
+        <div style={{ color:'#94a3b8', fontSize:'1rem', marginTop:10 }}>Tap to sign in for today's games</div>
+      </div>
+      <button onClick={onNew} style={{ background:'#2563eb', color:'#fff', padding:'28px 56px', width:320, fontSize:'1.5rem' }}>I'm New</button>
+      <button onClick={onReturning} style={{ background:'#16a34a', color:'#fff', padding:'28px 56px', width:320, fontSize:'1.5rem' }}>I'm Returning</button>
+      <button onClick={onSwitchLeague} style={{ background:'transparent', color:'#475569', padding:'12px 24px', fontSize:'1rem', border:'1px solid #334155' }}>
+        Switch League
+      </button>
+    </div>
+  );
+}
+
+// ── New player ────────────────────────────────────────────────────────────────
+function NewPlayerScreen({ league, onBack }) {
+  const [name, setName] = useState('');
+  const [rating, setRating] = useState(5);
+  const [msg, setMsg] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
+    if (!name.trim()) { setMsg({ type:'error', text:'Please enter your name.' }); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`http://${HOST}:8000/api/players`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name: name.trim(), rating }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Error');
+      const player = await res.json();
+      const res2 = await fetch(`http://${HOST}:8000/api/leagues/${league.id}/signups/${player.id}`, { method:'POST' });
+      if (!res2.ok && res2.status !== 409) throw new Error('Sign-up failed');
+      setMsg({ type:'success', text:`Welcome, ${player.name}! You're on the ${league.name} list.` });
+      setName(''); setRating(5);
+    } catch(e) {
+      setMsg({ type:'error', text: e.message });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', padding:32, maxWidth:480, margin:'0 auto', width:'100%', gap:20 }}>
+      <button onClick={onBack} style={{ background:'#1e293b', color:'#94a3b8', padding:'10px 20px', alignSelf:'flex-start', fontSize:'1rem' }}>← Back</button>
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        <h2 style={{ fontSize:'1.8rem', fontWeight:800 }}>New Player</h2>
+        <span style={{ background:'#1e3a5f', color:'#93c5fd', padding:'4px 12px', borderRadius:16, fontSize:'.85rem', fontWeight:700 }}>{league.name}</span>
+      </div>
+
+      {msg && (
+        <div style={{ padding:16, borderRadius:10, background: msg.type==='success'?'#14532d':'#7f1d1d', color: msg.type==='success'?'#86efac':'#fca5a5', fontSize:'1.1rem' }}>
+          {msg.text}
+          {msg.type==='success' && <button onClick={onBack} style={{ display:'block', marginTop:12, background:'#16a34a', color:'#fff', padding:'12px 24px', fontSize:'1rem' }}>Back to Home</button>}
+        </div>
+      )}
+
+      {!msg?.type?.includes('success') && <>
+        <div>
+          <label style={{ display:'block', marginBottom:8, color:'#94a3b8', fontWeight:600 }}>Your Name</label>
+          <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="Enter your name"
+            style={{ width:'100%', padding:'16px', borderRadius:10, border:'2px solid #334155', background:'#1e293b', color:'#f1f5f9', fontSize:'1.2rem' }}
+            onKeyDown={e => e.key==='Enter' && handleSubmit()} />
+        </div>
+        <div>
+          <label style={{ display:'block', marginBottom:8, color:'#94a3b8', fontWeight:600 }}>
+            Skill Rating: <span style={{ color:'#38bdf8', fontSize:'1.2rem' }}>{rating}</span>
+            <span style={{ color:'#475569', fontSize:'.85rem', marginLeft:8 }}>(set by operator)</span>
+          </label>
+          <input type="range" min={1} max={10} step={0.5} value={rating} onChange={e=>setRating(Number(e.target.value))}
+            style={{ width:'100%', accentColor:'#38bdf8', height:8 }} />
+          <div style={{ display:'flex', justifyContent:'space-between', color:'#475569', fontSize:'.85rem', marginTop:4 }}>
+            <span>1 – Beginner</span><span>10 – Expert</span>
+          </div>
+        </div>
+        <button onClick={handleSubmit} disabled={loading}
+          style={{ background:'#2563eb', color:'#fff', padding:'20px', fontSize:'1.2rem', opacity: loading?.6:1 }}>
+          {loading ? 'Adding…' : 'Add Me →'}
+        </button>
+      </>}
+    </div>
+  );
+}
+
+// ── Returning player ──────────────────────────────────────────────────────────
+function ReturningScreen({ league, allPlayers, signedUpIds, onBack }) {
+  const [msg, setMsg] = useState({});
+  const [loading, setLoading] = useState(null);
+  const maxRating = allPlayers.length ? Math.max(...allPlayers.map(p=>p.rating), 10) : 10;
+
+  async function signUp(player) {
+    if (signedUpIds.has(player.id)) {
+      setMsg(m => ({ ...m, [player.id]: { type:'info', text:"You're already on the list!" } }));
+      return;
+    }
+    setLoading(player.id);
+    try {
+      const res = await fetch(`http://${HOST}:8000/api/leagues/${league.id}/signups/${player.id}`, { method:'POST' });
+      if (res.status === 409) {
+        setMsg(m => ({ ...m, [player.id]: { type:'info', text:"You're already on the list!" } }));
+      } else if (!res.ok) {
+        throw new Error((await res.json()).detail || 'Error');
+      } else {
+        setMsg(m => ({ ...m, [player.id]: { type:'success', text:'Signed up! See you on the court.' } }));
+      }
+    } catch(e) {
+      setMsg(m => ({ ...m, [player.id]: { type:'error', text: e.message } }));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', padding:32, maxWidth:560, margin:'0 auto', width:'100%', gap:16 }}>
+      <button onClick={onBack} style={{ background:'#1e293b', color:'#94a3b8', padding:'10px 20px', alignSelf:'flex-start', fontSize:'1rem' }}>← Back</button>
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        <h2 style={{ fontSize:'1.8rem', fontWeight:800 }}>Select Your Name</h2>
+        <span style={{ background:'#1e3a5f', color:'#93c5fd', padding:'4px 12px', borderRadius:16, fontSize:'.85rem', fontWeight:700 }}>{league.name}</span>
+      </div>
+      {allPlayers.length === 0 && <p style={{ color:'#94a3b8' }}>No players yet. Use "I'm New" to register.</p>}
+      <div style={{ overflowY:'auto', display:'flex', flexDirection:'column', gap:10, maxHeight:'calc(100vh - 220px)' }}>
+        {allPlayers.map(p => {
+          const alreadyIn = signedUpIds.has(p.id);
+          const m = msg[p.id];
+          return (
+            <div key={p.id} style={{ background:'#1e293b', borderRadius:12, padding:'16px 20px', border: alreadyIn ? '2px solid #16a34a' : '2px solid transparent' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                <span style={{ fontSize:'1.2rem', fontWeight:700 }}>{p.name}</span>
+                {alreadyIn
+                  ? <span style={{ color:'#4ade80', fontSize:'.85rem', fontWeight:600 }}>✓ Signed Up</span>
+                  : <button onClick={()=>signUp(p)} disabled={loading===p.id}
+                      style={{ background:'#16a34a', color:'#fff', padding:'10px 20px', fontSize:'1rem', opacity: loading===p.id?.6:1 }}>
+                      {loading===p.id ? '…' : 'Sign In'}
+                    </button>
+                }
+              </div>
+              <RatingBar rating={p.rating} maxRating={maxRating} />
+              {m && (
+                <div style={{ marginTop:8, padding:'6px 10px', borderRadius:6,
+                  background: m.type==='success'?'#14532d': m.type==='info'?'#1e3a5f':'#7f1d1d',
+                  color: m.type==='success'?'#86efac': m.type==='info'?'#93c5fd':'#fca5a5', fontSize:'.9rem' }}>
+                  {m.text}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Signed-up list ────────────────────────────────────────────────────────────
+function SignedUpList({ players }) {
+  if (!players || players.length === 0)
+    return <div style={{ padding:'12px 32px', color:'#475569', fontSize:'.95rem' }}>No one signed up yet.</div>;
+  return (
+    <div style={{ padding:'0 32px 12px', display:'flex', flexWrap:'wrap', gap:8 }}>
+      {players.map(p => (
+        <span key={p.id} style={{ background:'#1e293b', padding:'6px 14px', borderRadius:20, fontSize:'.9rem', color:'#94a3b8' }}>{p.name}</span>
+      ))}
+    </div>
+  );
+}
+
+// ── App root ──────────────────────────────────────────────────────────────────
+function App() {
+  const { msg, connected } = useWS();
+  const [screen, setScreen] = useState('league');
+  const [league, setLeague] = useState(null);
+
+  const leagues     = msg?.leagues || [];
+  const leagueState = league ? (msg?.states?.[String(league.id)] || {}) : {};
+  const signedUp    = leagueState.signed_up || [];
+  const allPlayers  = leagueState.players || [];
+  const signedUpIds = new Set(signedUp.map(p => p.id));
+
+  // Auto-advance past league picker if there's only one league
+  useEffect(() => {
+    if (screen === 'league' && leagues.length === 1 && !league) {
+      setLeague(leagues[0]);
+      setScreen('home');
+    }
+  }, [leagues]);
+
+  function selectLeague(l) { setLeague(l); setScreen('home'); }
+  function switchLeague()  { setLeague(null); setScreen('league'); }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh' }}>
+      <DisconnectBanner connected={connected} />
+      <div style={{ flex:1, display:'flex', flexDirection:'column' }}>
+        {screen === 'league'    && <LeagueScreen leagues={leagues} onSelect={selectLeague} />}
+        {screen === 'home'      && league && <HomeScreen league={league} onNew={()=>setScreen('new')} onReturning={()=>setScreen('returning')} onSwitchLeague={switchLeague} />}
+        {screen === 'new'       && league && <NewPlayerScreen league={league} onBack={()=>setScreen('home')} />}
+        {screen === 'returning' && league && <ReturningScreen league={league} allPlayers={allPlayers} signedUpIds={signedUpIds} onBack={()=>setScreen('home')} />}
+      </div>
+      {league && (
+        <div style={{ borderTop:'1px solid #1e293b', background:'#0f172a', padding:'16px 0 8px' }}>
+          <div style={{ padding:'0 32px 8px', color:'#64748b', fontSize:'.85rem', fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em' }}>
+            {league.name} — Signed Up ({signedUp.length})
+          </div>
+          <SignedUpList players={signedUp} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

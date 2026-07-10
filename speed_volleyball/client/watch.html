@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>VB Watch</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width:100%; height:100%; background:#000; color:#fff; font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif; -webkit-text-size-adjust:100%; touch-action:manipulation; overflow:hidden; }
+    #app { width:100vw; height:100vh; display:flex; flex-direction:column; }
+
+    /* ── league bar ── */
+    #league-bar {
+      flex-shrink:0; height:6vh; min-height:18px; max-height:28px;
+      display:flex; align-items:center; justify-content:center; gap:6px;
+      background:#0d0d0d; border-bottom:1px solid #1a1a1a;
+      padding:0 8px; overflow:hidden;
+    }
+    .league-btn {
+      padding:2px 12px; border:none; border-radius:20px; font-size:clamp(9px,2.5vw,13px);
+      font-weight:700; cursor:pointer; transition:background .15s;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .league-btn.active { background:#1d4ed8; color:#fff; }
+    .league-btn.inactive { background:#1a1a1a; color:#555; }
+
+    /* ── status bar ── */
+    #status-bar {
+      flex-shrink:0; height:5vh; min-height:14px; max-height:22px;
+      display:flex; align-items:center; justify-content:center; gap:6px;
+      font-size:clamp(9px,2.8vw,13px); font-weight:600; letter-spacing:.04em;
+      background:#111; transition:background .3s;
+    }
+    #status-bar.disconnected { background:#7f1d1d; color:#fca5a5; }
+    #status-bar.waiting      { background:#1e3a5f; color:#93c5fd; }
+    #status-bar.active       { background:#14532d; color:#86efac; }
+    .dot { width:clamp(5px,1.8vw,8px); height:clamp(5px,1.8vw,8px); border-radius:50%; background:currentColor; }
+
+    /* ── court ── */
+    #court { flex:1; display:grid; grid-template-columns:1fr 1fr; min-height:0; }
+    .team-panel { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:clamp(6px,2.5vw,14px) clamp(4px,2vw,10px); gap:clamp(4px,2vh,10px); position:relative; user-select:none; -webkit-user-select:none; }
+    .team-panel:first-child { border-right:1px solid #1a1a1a; }
+    .team-name { font-size:clamp(10px,4vw,18px); font-weight:800; text-align:center; line-height:1.1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:100%; }
+    .team-score { font-size:clamp(42px,18vw,110px); font-weight:900; line-height:1; letter-spacing:-.02em; transition:transform .12s ease; }
+    .team-score.bump { transform:scale(1.18); }
+    .score-btn { width:100%; padding:clamp(10px,4vh,22px) 0; border:none; border-radius:clamp(8px,3vw,16px); font-size:clamp(14px,5vw,24px); font-weight:800; cursor:pointer; transition:transform .1s,filter .15s; -webkit-tap-highlight-color:transparent; }
+    .score-btn:active { transform:scale(.92); filter:brightness(.8); }
+    .score-btn:disabled { opacity:.4; cursor:not-allowed; }
+    .team-0 .team-name { color:#60a5fa; }
+    .team-0 .team-score { color:#f8fafc; }
+    .team-0 .score-btn { background:#1d4ed8; color:#fff; }
+    .team-1 .team-name { color:#fbbf24; }
+    .team-1 .team-score { color:#f8fafc; }
+    .team-1 .score-btn { background:#b45309; color:#fff; }
+
+    /* ── waiting ── */
+    #waiting { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:clamp(6px,2.5vh,16px); padding:16px; text-align:center; }
+    #waiting .icon  { font-size:clamp(28px,12vw,60px); }
+    #waiting .title { font-size:clamp(13px,5vw,22px); font-weight:800; color:#60a5fa; }
+    #waiting .sub   { font-size:clamp(9px,3.5vw,14px); color:#475569; }
+
+    /* ── delta toast ── */
+    #delta-toast { position:fixed; bottom:clamp(6px,2vh,14px); left:50%; transform:translateX(-50%) translateY(20px); background:#1e293b; border:1px solid #334155; border-radius:clamp(8px,3vw,14px); padding:clamp(5px,2vw,10px) clamp(8px,3vw,16px); font-size:clamp(9px,3vw,13px); white-space:nowrap; pointer-events:none; opacity:0; transition:opacity .25s,transform .25s; z-index:50; max-width:90vw; overflow:hidden; text-overflow:ellipsis; }
+    #delta-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    .flash { position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .15s; z-index:5; }
+    .flash.show { opacity:.22; }
+    .team-0 .flash { background:#60a5fa; }
+    .team-1 .flash { background:#fbbf24; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="league-bar"></div>
+  <div id="status-bar" class="disconnected">
+    <span class="dot"></span>
+    <span id="status-text">Connecting…</span>
+  </div>
+  <div id="court" style="display:none">
+    <div class="team-panel team-0" id="panel-0">
+      <div class="flash" id="flash-0"></div>
+      <div class="team-name" id="name-0">—</div>
+      <div class="team-score" id="score-0">0</div>
+      <button class="score-btn" id="btn-0">+1</button>
+    </div>
+    <div class="team-panel team-1" id="panel-1">
+      <div class="flash" id="flash-1"></div>
+      <div class="team-name" id="name-1">—</div>
+      <div class="team-score" id="score-1">0</div>
+      <button class="score-btn" id="btn-1">+1</button>
+    </div>
+  </div>
+  <div id="waiting">
+    <div class="icon">⚡</div>
+    <div class="title">Speed Volleyball</div>
+    <div class="sub" id="waiting-sub">Connecting…</div>
+  </div>
+</div>
+<div id="delta-toast"></div>
+
+<script>
+const HOST    = location.hostname;
+const API     = `http://${HOST}:8000`;
+const LS_KEY  = 'vb_watch_league';
+
+const statusBar  = document.getElementById('status-bar');
+const statusText = document.getElementById('status-text');
+const leagueBar  = document.getElementById('league-bar');
+const courtEl    = document.getElementById('court');
+const waitingEl  = document.getElementById('waiting');
+const waitingSub = document.getElementById('waiting-sub');
+const toast      = document.getElementById('delta-toast');
+const nameEl     = [document.getElementById('name-0'),  document.getElementById('name-1')];
+const scoreEl    = [document.getElementById('score-0'), document.getElementById('score-1')];
+const btnEl      = [document.getElementById('btn-0'),   document.getElementById('btn-1')];
+const flashEl    = [document.getElementById('flash-0'), document.getElementById('flash-1')];
+
+let toastTimer   = null;
+let lastDeltaKey = '';
+let awarding     = false;
+let lastScores   = [null, null];
+let selectedLeagueId = parseInt(localStorage.getItem(LS_KEY) || '0', 10) || null;
+let allLeagues   = [];
+
+// ── League bar ───────────────────────────────────────────────────────────────
+function renderLeagueBar(leagues) {
+  if (leagues.length <= 1) { leagueBar.style.display = 'none'; return; }
+  leagueBar.style.display = 'flex';
+  leagueBar.innerHTML = '';
+  leagues.forEach(l => {
+    const btn = document.createElement('button');
+    btn.className = 'league-btn ' + (l.id === selectedLeagueId ? 'active' : 'inactive');
+    btn.textContent = l.name;
+    btn.addEventListener('click', () => {
+      selectedLeagueId = l.id;
+      localStorage.setItem(LS_KEY, String(l.id));
+      renderLeagueBar(allLeagues);
+      // Re-render current state from last known message
+      if (window._lastMsg) render(window._lastMsg);
+    });
+    leagueBar.appendChild(btn);
+  });
+}
+
+// ── Main render ──────────────────────────────────────────────────────────────
+function render(data) {
+  window._lastMsg = data;
+  allLeagues = data.leagues || [];
+
+  // Default league selection
+  if (!selectedLeagueId && allLeagues.length > 0) {
+    const active = allLeagues.find(l => data.states?.[l.id]?.status === 'active');
+    selectedLeagueId = (active || allLeagues[0]).id;
+    localStorage.setItem(LS_KEY, String(selectedLeagueId));
+  }
+
+  renderLeagueBar(allLeagues);
+
+  const league = allLeagues.find(l => l.id === selectedLeagueId);
+  const state  = data.states?.[String(selectedLeagueId)];
+  const active = state?.status === 'active' && state?.on_court?.length === 2;
+
+  courtEl.style.display  = active ? 'grid' : 'none';
+  waitingEl.style.display = active ? 'none' : 'flex';
+
+  if (!active) {
+    setStatus('waiting', league ? `${league.name} — waiting` : 'Waiting…');
+    waitingSub.textContent = league ? `${league.name} — waiting for game` : 'Waiting for game…';
+    return;
+  }
+
+  setStatus('active', league ? `${league.name} LIVE` : 'LIVE');
+
+  state.on_court.forEach((team, i) => {
+    nameEl[i].textContent = truncate(team.name, 10);
+    nameEl[i].title = team.name;
+    if (lastScores[i] !== null && team.score !== lastScores[i]) {
+      scoreEl[i].classList.remove('bump');
+      void scoreEl[i].offsetWidth;
+      scoreEl[i].classList.add('bump');
+      setTimeout(() => scoreEl[i].classList.remove('bump'), 200);
+    }
+    scoreEl[i].textContent = team.score;
+    lastScores[i] = team.score;
+  });
+
+  const deltas = state.last_rating_deltas;
+  if (deltas && deltas.length > 0) {
+    const key = JSON.stringify(deltas);
+    if (key !== lastDeltaKey) {
+      lastDeltaKey = key;
+      showToast(deltas);
+    }
+  }
+}
+
+function setStatus(cls, text) { statusBar.className = cls; statusText.textContent = text; }
+function truncate(str, max)   { return str.length <= max ? str : str.slice(0, max-1) + '…'; }
+
+function showToast(deltas) {
+  const winners = deltas.filter(d => d.delta > 0);
+  const losers  = deltas.filter(d => d.delta <= 0);
+  const parts   = [];
+  if (winners.length) parts.push(`+${winners[0].delta.toFixed(1)} — ${winners.map(d=>d.player_name.split(' ')[0]).join(', ')}`);
+  if (losers.length)  parts.push(`${losers[0].delta.toFixed(1)} — ${losers.map(d=>d.player_name.split(' ')[0]).join(', ')}`);
+  toast.textContent = parts.join('  ·  ');
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+// ── Scoring ──────────────────────────────────────────────────────────────────
+async function awardPoint(idx) {
+  if (awarding || !selectedLeagueId) return;
+  awarding = true;
+  btnEl[0].disabled = true; btnEl[1].disabled = true;
+  flashEl[idx].classList.add('show');
+  setTimeout(() => flashEl[idx].classList.remove('show'), 200);
+  try {
+    await fetch(`${API}/api/leagues/${selectedLeagueId}/game/point/${idx}`, { method:'POST' });
+  } catch(_) {}
+  finally {
+    awarding = false;
+    btnEl[0].disabled = false; btnEl[1].disabled = false;
+  }
+}
+
+btnEl[0].addEventListener('click', () => awardPoint(0));
+btnEl[1].addEventListener('click', () => awardPoint(1));
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+let delay = 1000;
+function connect() {
+  setStatus('disconnected', 'Connecting…');
+  const ws = new WebSocket(`ws://${HOST}:8000/ws`);
+  ws.onopen  = () => { delay = 1000; };
+  ws.onmessage = e => { try { render(JSON.parse(e.data)); } catch(_) {} };
+  ws.onclose = () => {
+    setStatus('disconnected', 'Reconnecting…');
+    courtEl.style.display = 'none';
+    waitingEl.style.display = 'flex';
+    setTimeout(() => { delay = Math.min(delay * 2, 30000); connect(); }, delay);
+  };
+}
+connect();
+</script>
+</body>
+</html>

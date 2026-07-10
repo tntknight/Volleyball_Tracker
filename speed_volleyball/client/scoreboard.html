@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speed Volleyball — Scoreboard</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; overflow: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #050a0f; color: #f1f5f9; }
+    #root { display: flex; flex-direction: column; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+const HOST = window.location.hostname;
+
+const LEAGUE_KEY = 'vb_scoreboard_league';
+
+function useWS() {
+  const [msg, setMsg] = useState(null);
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    let ws, timer, delay = 1000;
+    function connect() {
+      ws = new WebSocket(`ws://${HOST}:8000/ws`);
+      ws.onopen  = () => { setConnected(true); delay = 1000; };
+      ws.onmessage = e => setMsg(JSON.parse(e.data));
+      ws.onclose = () => {
+        setConnected(false);
+        timer = setTimeout(() => { delay = Math.min(delay * 2, 30000); connect(); }, delay);
+      };
+    }
+    connect();
+    return () => { clearTimeout(timer); try { ws.close(); } catch(_) {} };
+  }, []);
+  return { msg, connected };
+}
+
+function LeagueBar({ leagues, selected, onChange }) {
+  if (leagues.length <= 1) return null;
+  return (
+    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+      {leagues.map(l => (
+        <button key={l.id} onClick={() => onChange(l)}
+          style={{
+            padding:'4px 16px', fontSize:'clamp(.7rem,1.8vw,1rem)', fontWeight:700, borderRadius:20,
+            background: selected?.id === l.id ? '#1d4ed8' : 'rgba(255,255,255,.07)',
+            color: selected?.id === l.id ? '#fff' : '#64748b',
+            border: selected?.id === l.id ? 'none' : '1px solid #334155',
+            cursor: 'pointer',
+          }}>
+          {l.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function WaitingScreen({ leagueName }) {
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:24 }}>
+      <div style={{ fontSize:'clamp(2rem,6vw,5rem)', fontWeight:900, color:'#38bdf8', textAlign:'center' }}>⚡ Speed Volleyball</div>
+      {leagueName && <div style={{ fontSize:'clamp(1rem,3vw,2.5rem)', fontWeight:700, color:'#475569' }}>{leagueName}</div>}
+      <div style={{ fontSize:'clamp(.8rem,2.5vw,1.8rem)', color:'#334155' }}>Waiting for game to start…</div>
+    </div>
+  );
+}
+
+function TeamPanel({ team, side }) {
+  const accent = side === 0 ? '#38bdf8' : '#f59e0b';
+  return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', padding:'clamp(16px,3vw,48px)', background: side===0 ? 'rgba(14,165,233,.06)' : 'rgba(245,158,11,.06)', borderRadius:20 }}>
+      <div style={{ fontSize:'clamp(1.2rem,3.5vw,3rem)', fontWeight:900, color:accent, marginBottom:'clamp(8px,1.5vw,20px)', textAlign: side===0 ? 'left' : 'right' }}>
+        {team.name}
+      </div>
+      <div style={{ fontSize:'clamp(5rem,18vw,22rem)', fontWeight:900, color:'#f8fafc', lineHeight:1, textAlign: side===0 ? 'left' : 'right', textShadow:`0 0 80px ${accent}44`, marginBottom:'clamp(8px,1.5vw,24px)' }}>
+        {team.score}
+      </div>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:'clamp(6px,1vw,10px)', justifyContent: side===0 ? 'flex-start' : 'flex-end', marginTop:'auto' }}>
+        {team.players.map((p,i) => (
+          <span key={i} style={{ background:`${accent}22`, color:accent, border:`1px solid ${accent}44`, padding:'clamp(4px,.8vw,10px) clamp(10px,1.5vw,20px)', borderRadius:100, fontSize:'clamp(.7rem,1.8vw,1.4rem)', fontWeight:600 }}>
+            {p.name}
+          </span>
+        ))}
+      </div>
+      <div style={{ marginTop:'clamp(6px,1vw,12px)', color:'#475569', fontSize:'clamp(.6rem,1.2vw,.95rem)', textAlign: side===0 ? 'left' : 'right' }}>avg {team.avg_rating}</div>
+    </div>
+  );
+}
+
+function QueueRow({ team, position }) {
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:'clamp(8px,1.5vw,20px)', padding:'clamp(6px,1vw,14px) clamp(10px,2vw,24px)', background:'#0d1117', borderRadius:10, minWidth:0 }}>
+      <span style={{ color:'#475569', fontSize:'clamp(.7rem,1.5vw,1.1rem)', fontWeight:700, minWidth:'1.5em' }}>#{position}</span>
+      <span style={{ fontWeight:700, fontSize:'clamp(.8rem,1.8vw,1.2rem)', color:'#94a3b8', flexShrink:0 }}>{team.name}</span>
+      <span style={{ color:'#475569', fontSize:'clamp(.65rem,1.3vw,1rem)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+        {team.players.map(p=>p.name).join(' · ')}
+      </span>
+      <span style={{ color:'#38bdf8', fontWeight:700, fontSize:'clamp(.7rem,1.5vw,1.1rem)', flexShrink:0 }}>{team.score} pts</span>
+    </div>
+  );
+}
+
+function App() {
+  const { msg, connected } = useWS();
+  const [leagueId, setLeagueId] = useState(() => {
+    const saved = localStorage.getItem(LEAGUE_KEY);
+    return saved ? parseInt(saved, 10) : null;
+  });
+
+  const leagues = msg?.leagues || [];
+
+  useEffect(() => {
+    if (!leagueId && leagues.length > 0) {
+      // Auto-pick the first active league, or just the first league
+      const active = leagues.find(l => msg?.states?.[String(l.id)]?.status === 'active');
+      const pick = active || leagues[0];
+      setLeagueId(pick.id);
+      localStorage.setItem(LEAGUE_KEY, String(pick.id));
+    }
+  }, [leagues]);
+
+  function changeLeague(l) {
+    setLeagueId(l.id);
+    localStorage.setItem(LEAGUE_KEY, String(l.id));
+  }
+
+  const league      = leagues.find(l => l.id === leagueId) || leagues[0] || null;
+  const leagueState = league ? (msg?.states?.[String(league.id)] || {}) : {};
+  const isActive    = leagueState.status === 'active';
+  const [t0, t1]    = leagueState.on_court || [];
+  const queue       = leagueState.queue || [];
+
+  return (
+    <div style={{ height:'100%', display:'flex', flexDirection:'column' }}>
+      {!connected && (
+        <div style={{ background:'#7f1d1d', color:'#fca5a5', padding:'6px', textAlign:'center', fontSize:'clamp(.7rem,1.5vw,1rem)', flexShrink:0 }}>
+          Disconnected — reconnecting…
+        </div>
+      )}
+
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'clamp(8px,1.5vw,20px) clamp(12px,2.5vw,32px)', flexShrink:0, borderBottom:'1px solid #0d1117' }}>
+        <span style={{ fontWeight:900, fontSize:'clamp(.9rem,2.5vw,1.8rem)', color:'#38bdf8' }}>⚡ Speed Volleyball</span>
+        <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+          <LeagueBar leagues={leagues} selected={league} onChange={changeLeague} />
+          {isActive && <span style={{ background:'#14532d', color:'#86efac', padding:'4px 14px', borderRadius:20, fontWeight:700, fontSize:'clamp(.65rem,1.5vw,1rem)' }}>LIVE</span>}
+        </div>
+      </div>
+
+      {!isActive && <WaitingScreen leagueName={league?.name} />}
+
+      {isActive && t0 && t1 && (
+        <>
+          <div style={{ flex:1, display:'flex', gap:'clamp(8px,2vw,24px)', padding:'clamp(8px,2vw,24px)', minHeight:0 }}>
+            <TeamPanel team={t0} side={0} />
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+              <div style={{ fontSize:'clamp(1rem,3vw,2.5rem)', fontWeight:900, color:'#334155' }}>VS</div>
+            </div>
+            <TeamPanel team={t1} side={1} />
+          </div>
+
+          {queue.length > 0 && (
+            <div style={{ flexShrink:0, padding:'0 clamp(8px,2vw,24px) clamp(8px,1.5vw,16px)' }}>
+              <div style={{ color:'#334155', fontSize:'clamp(.6rem,1.2vw,.85rem)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:'clamp(4px,.8vw,10px)' }}>
+                Waiting Queue — {league?.name}
+              </div>
+              <div style={{ display:'flex', gap:'clamp(6px,1vw,12px)', flexWrap:'wrap' }}>
+                {queue.map((team,i) => <QueueRow key={i} team={team} position={i+1} />)}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

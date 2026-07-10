@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speed Volleyball — Operator</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f1f5f9; min-height: 100vh; }
+    #root { min-height: 100vh; display: flex; flex-direction: column; }
+    button { cursor: pointer; border: none; border-radius: 8px; font-family: inherit; transition: opacity .15s, transform .1s; }
+    button:active { transform: scale(.97); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    input, select { font-family: inherit; background: #1e293b; color: #f1f5f9; border: 1.5px solid #334155; border-radius: 6px; }
+    input:focus, select:focus { outline: none; border-color: #38bdf8; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const HOST = window.location.hostname;
+const API  = `http://${HOST}:8000`;
+
+const LEAGUE_KEY = 'vb_operator_league';
+
+function useWS() {
+  const [msg, setMsg] = useState(null);
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    let ws, timer, delay = 1000;
+    function connect() {
+      ws = new WebSocket(`ws://${HOST}:8000/ws`);
+      ws.onopen  = () => { setConnected(true); delay = 1000; };
+      ws.onmessage = e => setMsg(JSON.parse(e.data));
+      ws.onclose = () => {
+        setConnected(false);
+        timer = setTimeout(() => { delay = Math.min(delay * 2, 30000); connect(); }, delay);
+      };
+    }
+    connect();
+    return () => { clearTimeout(timer); try { ws.close(); } catch(_) {} };
+  }, []);
+  return { msg, connected };
+}
+
+function post(path, body) {
+  return fetch(`${API}${path}`, {
+    method: 'POST',
+    headers: body !== undefined ? {'Content-Type':'application/json'} : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+function put(path, body) {
+  return fetch(`${API}${path}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+}
+
+// ── League selector bar ───────────────────────────────────────────────────────
+function LeagueBar({ leagues, selected, onChange }) {
+  return (
+    <div style={{ display:'flex', gap:6, alignItems:'center', padding:'0 16px' }}>
+      <span style={{ color:'#475569', fontSize:'.8rem', fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', marginRight:4 }}>League:</span>
+      {leagues.map(l => (
+        <button key={l.id} onClick={() => onChange(l)}
+          style={{
+            padding:'5px 14px', fontSize:'.9rem', fontWeight:700, borderRadius:20,
+            background: selected?.id === l.id ? '#1d4ed8' : '#1e293b',
+            color: selected?.id === l.id ? '#fff' : '#64748b',
+            border: selected?.id === l.id ? 'none' : '1px solid #334155',
+          }}>
+          {l.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TabBar({ active, onChange }) {
+  return (
+    <div style={{ display:'flex', background:'#1e293b', borderBottom:'2px solid #334155' }}>
+      {[['players','Players'],['game','Game'],['admin','Admin']].map(([id,label]) => (
+        <button key={id} onClick={()=>onChange(id)}
+          style={{
+            flex:1, padding:'16px', fontSize:'1rem', fontWeight:700, borderRadius:0,
+            background: active===id ? '#0f172a' : 'transparent',
+            color: active===id ? '#38bdf8' : '#94a3b8',
+            borderBottom: active===id ? '3px solid #38bdf8' : '3px solid transparent',
+          }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DisconnectBanner({ connected }) {
+  if (connected) return null;
+  return <div style={{ background:'#7f1d1d', color:'#fca5a5', padding:'8px', textAlign:'center', fontSize:'.9rem' }}>Disconnected — reconnecting…</div>;
+}
+
+// ── Players tab ───────────────────────────────────────────────────────────────
+function PlayersTab({ league, state, allPlayers, onGameStart }) {
+  const [ppt, setPpt] = useState(3);
+  const [localTeams, setLocalTeams] = useState(null);
+  const [waitlist, setWaitlist] = useState([]);
+  const [loading, setLoading] = useState('');
+  const [err, setErr] = useState('');
+
+  const signedUp    = state?.signed_up || [];
+  const pendingTeams = localTeams || state?.pending_teams || [];
+
+  async function handleFormTeams() {
+    setLoading('form'); setErr('');
+    try {
+      const res = await post(`/api/leagues/${league.id}/teams/form`, { players_per_team: ppt });
+      if (!res.ok) { setErr((await res.json()).detail || 'Error'); return; }
+      const data = await res.json();
+      setLocalTeams(data.teams.map(t => ({ ...t, players: [...t.players] })));
+      setWaitlist(data.waitlist || []);
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(''); }
+  }
+
+  function movePlayer(fromTeamIdx, playerIdx, toTeamIdx) {
+    const teams = localTeams.map(t => ({ ...t, players: [...t.players] }));
+    const [player] = teams[fromTeamIdx].players.splice(playerIdx, 1);
+    teams[toTeamIdx].players.push(player);
+    teams.forEach(t => {
+      t.avg_rating = t.players.length
+        ? +(t.players.reduce((s,p)=>s+p.rating,0)/t.players.length).toFixed(1)
+        : 0;
+    });
+    setLocalTeams(teams);
+  }
+
+  async function handleStartGame() {
+    setLoading('start'); setErr('');
+    const body = localTeams
+      ? { teams: localTeams.map(t => ({ name: t.name, player_ids: t.players.map(p=>p.id) })) }
+      : {};
+    try {
+      const res = await post(`/api/leagues/${league.id}/game/start`, body);
+      if (!res.ok) { setErr((await res.json()).detail || 'Error'); return; }
+      setLocalTeams(null);
+      onGameStart();
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(''); }
+  }
+
+  return (
+    <div style={{ padding:20, display:'flex', flexDirection:'column', gap:16 }}>
+      <div style={{ background:'#1e293b', borderRadius:10, padding:16 }}>
+        <h3 style={{ marginBottom:12, color:'#94a3b8', fontSize:'.85rem', textTransform:'uppercase', letterSpacing:'.05em' }}>
+          {league.name} — Signed Up ({signedUp.length})
+        </h3>
+        {signedUp.length === 0
+          ? <p style={{ color:'#475569' }}>No players signed up yet.</p>
+          : <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+              {signedUp.map(p => (
+                <span key={p.id} style={{ background:'#0f172a', padding:'6px 12px', borderRadius:20, fontSize:'.9rem' }}>
+                  {p.name} <span style={{ color:'#38bdf8' }}>{Number(p.rating).toFixed(1)}</span>
+                </span>
+              ))}
+            </div>
+        }
+      </div>
+
+      <div style={{ display:'flex', gap:12, alignItems:'flex-end', flexWrap:'wrap' }}>
+        <div>
+          <label style={{ display:'block', marginBottom:6, color:'#94a3b8', fontSize:'.9rem' }}>Players per team</label>
+          <input type="number" value={ppt} min={1} max={10} onChange={e=>setPpt(Number(e.target.value))}
+            style={{ width:80, padding:'8px 10px', fontSize:'1rem' }} />
+        </div>
+        <button onClick={handleFormTeams} disabled={loading==='form' || signedUp.length < ppt*2}
+          style={{ background:'#0284c7', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:600 }}>
+          {loading==='form' ? 'Forming…' : 'Form Teams'}
+        </button>
+        {pendingTeams.length >= 2 && (
+          <button onClick={handleStartGame} disabled={!!loading}
+            style={{ background:'#16a34a', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:700 }}>
+            {loading==='start' ? 'Starting…' : '▶ Start Game'}
+          </button>
+        )}
+      </div>
+
+      {err && <div style={{ color:'#fca5a5', background:'#7f1d1d', padding:10, borderRadius:8 }}>{err}</div>}
+
+      {pendingTeams.length > 0 && (
+        <div>
+          <h3 style={{ marginBottom:12, color:'#94a3b8', fontSize:'.85rem', textTransform:'uppercase', letterSpacing:'.05em' }}>Team Preview</h3>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:12 }}>
+            {pendingTeams.map((team, ti) => (
+              <div key={ti} style={{ background:'#1e293b', borderRadius:10, padding:14 }}>
+                <div style={{ fontWeight:700, marginBottom:6, color:'#38bdf8' }}>{team.name}</div>
+                <div style={{ color:'#94a3b8', fontSize:'.8rem', marginBottom:10 }}>Avg: {Number(team.avg_rating).toFixed(1)}</div>
+                {team.players.map((p, pi) => (
+                  <div key={p.id} style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                    <span style={{ flex:1, fontSize:'.9rem' }}>{p.name} <span style={{ color:'#64748b' }}>{Number(p.rating).toFixed(1)}</span></span>
+                    <div style={{ display:'flex', gap:3 }}>
+                      {pendingTeams.map((_, oti) => oti !== ti && (
+                        <button key={oti} onClick={()=>movePlayer(ti, pi, oti)}
+                          style={{ background:'#334155', color:'#94a3b8', padding:'2px 7px', fontSize:'.75rem', borderRadius:5 }}
+                          title={`Move to ${pendingTeams[oti].name}`}>
+                          →{String.fromCharCode(65+oti)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {waitlist.length > 0 && (
+            <div style={{ marginTop:12, background:'#1e293b', borderRadius:10, padding:14 }}>
+              <div style={{ color:'#f59e0b', fontWeight:700, marginBottom:8 }}>Waitlist</div>
+              {waitlist.map(p => (
+                <span key={p.id} style={{ display:'inline-block', margin:'3px', background:'#292524', padding:'4px 10px', borderRadius:14, fontSize:'.85rem', color:'#a8a29e' }}>
+                  {p.name} {Number(p.rating).toFixed(1)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Game tab ──────────────────────────────────────────────────────────────────
+function DeltaNotification({ deltas, visible }) {
+  if (!visible || !deltas?.length) return null;
+  return (
+    <div style={{ position:'fixed', top:100, right:20, zIndex:100, background:'#1e293b', border:'1px solid #334155', borderRadius:12, padding:16, minWidth:200, maxWidth:300, boxShadow:'0 8px 32px rgba(0,0,0,.5)' }}>
+      <div style={{ fontWeight:700, marginBottom:8, color:'#94a3b8', fontSize:'.85rem' }}>Rating Changes</div>
+      {deltas.map((d,i) => (
+        <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:'.9rem' }}>
+          <span>{d.player_name}</span>
+          <span style={{ color: d.delta >= 0 ? '#4ade80' : '#f87171', fontWeight:700 }}>
+            {d.delta >= 0 ? '+' : ''}{Number(d.delta).toFixed(2)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GameTab({ league, state }) {
+  const [loading, setLoading] = useState('');
+  const [err, setErr] = useState('');
+  const [deltaVisible, setDeltaVisible] = useState(false);
+  const deltaTimer = useRef(null);
+  const lastDeltaRef = useRef('');
+
+  useEffect(() => {
+    const deltas = state?.last_rating_deltas;
+    if (!deltas?.length) return;
+    const key = JSON.stringify(deltas);
+    if (key !== lastDeltaRef.current) {
+      lastDeltaRef.current = key;
+      setDeltaVisible(true);
+      clearTimeout(deltaTimer.current);
+      deltaTimer.current = setTimeout(() => setDeltaVisible(false), 3000);
+    }
+  }, [state?.last_rating_deltas]);
+
+  async function awardPoint(idx) {
+    setLoading(`pt${idx}`); setErr('');
+    try {
+      const res = await post(`/api/leagues/${league.id}/game/point/${idx}`);
+      if (!res.ok) setErr((await res.json()).detail || 'Error');
+    } catch(e) { setErr(e.message); }
+    finally { setLoading(''); }
+  }
+
+  async function resetGame() {
+    if (!confirm(`Reset ${league.name} game and clear its sign-ups?`)) return;
+    setLoading('reset');
+    try { await post(`/api/leagues/${league.id}/game/reset`); }
+    catch(e) { setErr(e.message); }
+    finally { setLoading(''); }
+  }
+
+  if (!state || state.status !== 'active') {
+    return (
+      <div style={{ padding:40, textAlign:'center', color:'#475569' }}>
+        <p style={{ fontSize:'1.2rem' }}>No active game for {league.name}.</p>
+        <p style={{ marginTop:8 }}>Go to the Players tab to form teams and start a game.</p>
+      </div>
+    );
+  }
+
+  const [t0, t1] = state.on_court;
+  const queue = state.queue || [];
+
+  return (
+    <div style={{ padding:20, display:'flex', flexDirection:'column', gap:16 }}>
+      <DeltaNotification deltas={state.last_rating_deltas} visible={deltaVisible} />
+      <div style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:12, alignItems:'stretch' }}>
+        {[t0, t1].map((team, idx) => (
+          <div key={idx} style={{ background:'#1e293b', borderRadius:12, padding:20, display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ fontWeight:800, fontSize:'1.3rem', color:'#38bdf8' }}>{team.name}</div>
+            <div style={{ fontSize:'3rem', fontWeight:900, lineHeight:1 }}>{team.score}</div>
+            <div style={{ color:'#64748b', fontSize:'.8rem' }}>Avg: {team.avg_rating}</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              {team.players.map(p => (
+                <span key={p.id} style={{ fontSize:'.9rem', color:'#94a3b8' }}>
+                  {p.name} <span style={{ color:'#475569' }}>{Number(p.rating).toFixed(1)}</span>
+                </span>
+              ))}
+            </div>
+            <button onClick={()=>awardPoint(idx)} disabled={!!loading}
+              style={{ background:'#16a34a', color:'#fff', padding:'14px', fontSize:'1.1rem', fontWeight:700, marginTop:'auto' }}>
+              {loading===`pt${idx}` ? '…' : '+1 Point'}
+            </button>
+          </div>
+        ))}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'#475569', fontWeight:900, fontSize:'1.5rem' }}>VS</div>
+      </div>
+
+      {err && <div style={{ color:'#fca5a5', background:'#7f1d1d', padding:10, borderRadius:8 }}>{err}</div>}
+
+      {queue.length > 0 && (
+        <div style={{ background:'#1e293b', borderRadius:10, padding:14 }}>
+          <h3 style={{ marginBottom:10, color:'#94a3b8', fontSize:'.85rem', textTransform:'uppercase', letterSpacing:'.05em' }}>Queue</h3>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {queue.map((team, i) => (
+              <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 12px', background:'#0f172a', borderRadius:8 }}>
+                <span style={{ fontWeight:600 }}>#{i+1} {team.name}</span>
+                <span style={{ color:'#94a3b8', fontSize:'.85rem' }}>{team.players.map(p=>p.name).join(', ')} · Score: {team.score}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button onClick={resetGame} disabled={!!loading}
+        style={{ background:'#7f1d1d', color:'#fca5a5', padding:'12px', fontSize:'1rem', fontWeight:600, marginTop:8 }}>
+        {loading==='reset' ? '…' : `End Game / Reset ${league.name}`}
+      </button>
+    </div>
+  );
+}
+
+// ── Admin tab ─────────────────────────────────────────────────────────────────
+function AdminTab({ league, players }) {
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editRating, setEditRating] = useState('');
+  const [history, setHistory] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const filtered = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+
+  async function selectPlayer(p) {
+    setSelected(p); setEditName(p.name); setEditRating(String(Number(p.rating).toFixed(1)));
+    setHistory(null); setMsg('');
+    const res = await fetch(`${API}/api/leagues/${league.id}/players/${p.id}/history`);
+    if (res.ok) setHistory(await res.json());
+  }
+
+  async function savePlayer() {
+    setSaving(true); setMsg('');
+    try {
+      const body = {};
+      if (editName !== selected.name) body.name = editName;
+      const r = parseFloat(editRating);
+      if (!isNaN(r) && r !== selected.rating) body.rating = r;
+      if (!Object.keys(body).length) { setMsg('No changes.'); return; }
+      const res = await put(`/api/leagues/${league.id}/players/${selected.id}`, body);
+      if (!res.ok) throw new Error((await res.json()).detail || 'Error');
+      setSelected(await res.json()); setMsg('Saved!');
+    } catch(e) { setMsg(`Error: ${e.message}`); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ padding:20, display:'flex', flexDirection:'column', gap:12 }}>
+      <input placeholder="Search players…" value={search} onChange={e=>setSearch(e.target.value)}
+        style={{ padding:'10px 14px', fontSize:'1rem', width:'100%', maxWidth:400 }} />
+      <div style={{ display:'grid', gridTemplateColumns: selected ? '1fr 320px' : '1fr', gap:16, alignItems:'start' }}>
+        <div style={{ background:'#1e293b', borderRadius:10, overflow:'hidden' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'.9rem' }}>
+            <thead>
+              <tr style={{ background:'#0f172a', color:'#64748b', textTransform:'uppercase', fontSize:'.75rem' }}>
+                <th style={{ padding:'10px 14px', textAlign:'left' }}>Name</th>
+                <th style={{ padding:'10px 14px', textAlign:'right' }}>Rating</th>
+                <th style={{ padding:'10px 14px', textAlign:'right' }}>Since</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p => (
+                <tr key={p.id} onClick={()=>selectPlayer(p)}
+                  style={{ cursor:'pointer', background: selected?.id===p.id ? '#0c4a6e' : 'transparent', borderBottom:'1px solid #0f172a' }}>
+                  <td style={{ padding:'10px 14px' }}>{p.name}</td>
+                  <td style={{ padding:'10px 14px', textAlign:'right', color:'#38bdf8', fontWeight:700 }}>{Number(p.rating).toFixed(1)}</td>
+                  <td style={{ padding:'10px 14px', textAlign:'right', color:'#475569', fontSize:'.8rem' }}>{p.created_at?.slice(0,10)}</td>
+                </tr>
+              ))}
+              {filtered.length === 0 && <tr><td colSpan={3} style={{ padding:20, textAlign:'center', color:'#475569' }}>No players found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        {selected && (
+          <div style={{ background:'#1e293b', borderRadius:10, padding:16, display:'flex', flexDirection:'column', gap:12 }}>
+            <div style={{ fontWeight:700, color:'#38bdf8' }}>Edit Player</div>
+            <div>
+              <label style={{ display:'block', marginBottom:4, color:'#94a3b8', fontSize:'.85rem' }}>Name</label>
+              <input value={editName} onChange={e=>setEditName(e.target.value)} style={{ width:'100%', padding:'8px 10px', fontSize:'1rem' }} />
+            </div>
+            <div>
+              <label style={{ display:'block', marginBottom:4, color:'#94a3b8', fontSize:'.85rem' }}>Rating</label>
+              <input value={editRating} onChange={e=>setEditRating(e.target.value)} type="number" step="0.1" min="1" style={{ width:'100%', padding:'8px 10px', fontSize:'1rem' }} />
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={savePlayer} disabled={saving}
+                style={{ flex:1, background:'#0284c7', color:'#fff', padding:'10px', fontSize:'1rem', fontWeight:600 }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={()=>setSelected(null)} style={{ background:'#1e293b', color:'#94a3b8', padding:'10px 14px', fontSize:'1rem', border:'1px solid #334155' }}>✕</button>
+            </div>
+            {msg && <div style={{ color: msg.startsWith('Error')?'#f87171':'#4ade80', fontSize:'.9rem' }}>{msg}</div>}
+            {history && (
+              <div>
+                <div style={{ color:'#94a3b8', fontSize:'.8rem', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Rating History</div>
+                <div style={{ maxHeight:200, overflowY:'auto', display:'flex', flexDirection:'column', gap:4 }}>
+                  {history.length === 0
+                    ? <span style={{ color:'#475569', fontSize:'.85rem' }}>No history yet.</span>
+                    : history.map((h,i) => (
+                        <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:'.85rem', padding:'4px 0', borderBottom:'1px solid #0f172a' }}>
+                          <span style={{ color:'#475569' }}>{h.timestamp?.slice(0,16).replace('T',' ')}</span>
+                          <span>
+                            <span style={{ color:'#94a3b8' }}>{Number(h.old_rating).toFixed(1)}</span>
+                            <span style={{ color:'#475569', margin:'0 4px' }}>→</span>
+                            <span style={{ color: h.new_rating >= h.old_rating ? '#4ade80' : '#f87171', fontWeight:600 }}>
+                              {Number(h.new_rating).toFixed(1)}
+                            </span>
+                          </span>
+                        </div>
+                      ))
+                  }
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── App root ──────────────────────────────────────────────────────────────────
+function App() {
+  const { msg, connected } = useWS();
+  const [tab, setTab] = useState('players');
+  const [leagueId, setLeagueId] = useState(() => {
+    const saved = localStorage.getItem(LEAGUE_KEY);
+    return saved ? parseInt(saved, 10) : null;
+  });
+
+  const leagues = msg?.leagues || [];
+
+  // Default to first league once data arrives
+  useEffect(() => {
+    if (!leagueId && leagues.length > 0) {
+      setLeagueId(leagues[0].id);
+      localStorage.setItem(LEAGUE_KEY, String(leagues[0].id));
+    }
+  }, [leagues]);
+
+  function changeLeague(l) {
+    setLeagueId(l.id);
+    localStorage.setItem(LEAGUE_KEY, String(l.id));
+    setTab('players');
+  }
+
+  const league      = leagues.find(l => l.id === leagueId) || leagues[0] || null;
+  const leagueState = league ? (msg?.states?.[String(league.id)] || {}) : {};
+  const isActive    = leagueState.status === 'active';
+  const leaguePlayers = leagueState.players || [];
+
+  // Auto-switch to game tab when game goes active
+  useEffect(() => {
+    if (isActive && tab === 'players') setTab('game');
+  }, [isActive]);
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh' }}>
+      <DisconnectBanner connected={connected} />
+      <div style={{ padding:'10px 16px', background:'#1e293b', borderBottom:'1px solid #334155', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+        <span style={{ fontWeight:800, fontSize:'1.1rem', color:'#38bdf8', flexShrink:0 }}>⚡ Speed Volleyball</span>
+        <span style={{ color:'#475569', fontSize:'.9rem', flexShrink:0 }}>Operator</span>
+        <div style={{ flex:1, minWidth:0 }} />
+        <LeagueBar leagues={leagues} selected={league} onChange={changeLeague} />
+        {isActive && (
+          <span style={{ background:'#14532d', color:'#86efac', padding:'4px 12px', borderRadius:20, fontSize:'.8rem', fontWeight:700, flexShrink:0 }}>
+            LIVE
+          </span>
+        )}
+      </div>
+      <TabBar active={tab} onChange={setTab} />
+      <div style={{ flex:1, overflowY:'auto' }}>
+        {!league
+          ? <div style={{ padding:40, textAlign:'center', color:'#475569' }}>Connecting…</div>
+          : tab === 'players' ? <PlayersTab league={league} state={leagueState} allPlayers={leaguePlayers} onGameStart={()=>setTab('game')} />
+          : tab === 'game'    ? <GameTab league={league} state={leagueState} />
+          :                     <AdminTab league={league} players={leaguePlayers} />
+        }
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
