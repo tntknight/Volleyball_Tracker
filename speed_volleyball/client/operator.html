@@ -103,14 +103,33 @@ function DisconnectBanner({ connected }) {
 
 // ── Players tab ───────────────────────────────────────────────────────────────
 function PlayersTab({ league, state, allPlayers, onGameStart }) {
+  const [mode, setMode] = useState('auto');
   const [ppt, setPpt] = useState(3);
+  const [numTeams, setNumTeams] = useState(2);
   const [localTeams, setLocalTeams] = useState(null);
-  const [waitlist, setWaitlist] = useState([]);
   const [loading, setLoading] = useState('');
   const [err, setErr] = useState('');
 
-  const signedUp    = state?.signed_up || [];
+  const signedUp     = state?.signed_up || [];
   const pendingTeams = localTeams || state?.pending_teams || [];
+  const assignedIds  = new Set(pendingTeams.flatMap(t => t.players.map(p => p.id)));
+  const unassigned   = signedUp.filter(p => !assignedIds.has(p.id));
+  const canStart     = pendingTeams.length >= 2 && pendingTeams.every(t => t.players.length > 0);
+
+  function recalcAvg(teams) {
+    teams.forEach(t => {
+      t.avg_rating = t.players.length
+        ? +(t.players.reduce((s,p)=>s+p.rating,0)/t.players.length).toFixed(1)
+        : 0;
+    });
+    return teams;
+  }
+
+  function switchMode(id) {
+    setMode(id);
+    setLocalTeams(null);
+    setErr('');
+  }
 
   async function handleFormTeams() {
     setLoading('form'); setErr('');
@@ -119,21 +138,37 @@ function PlayersTab({ league, state, allPlayers, onGameStart }) {
       if (!res.ok) { setErr((await res.json()).detail || 'Error'); return; }
       const data = await res.json();
       setLocalTeams(data.teams.map(t => ({ ...t, players: [...t.players] })));
-      setWaitlist(data.waitlist || []);
     } catch(e) { setErr(e.message); }
     finally { setLoading(''); }
+  }
+
+  function handleCreateManualTeams() {
+    setErr('');
+    const n = Math.max(2, Math.min(12, Math.round(numTeams) || 2));
+    setLocalTeams(Array.from({ length: n }, (_, i) => ({
+      name: `Team ${i < 26 ? String.fromCharCode(65 + i) : i + 1}`,
+      players: [],
+      avg_rating: 0,
+    })));
   }
 
   function movePlayer(fromTeamIdx, playerIdx, toTeamIdx) {
     const teams = localTeams.map(t => ({ ...t, players: [...t.players] }));
     const [player] = teams[fromTeamIdx].players.splice(playerIdx, 1);
     teams[toTeamIdx].players.push(player);
-    teams.forEach(t => {
-      t.avg_rating = t.players.length
-        ? +(t.players.reduce((s,p)=>s+p.rating,0)/t.players.length).toFixed(1)
-        : 0;
-    });
-    setLocalTeams(teams);
+    setLocalTeams(recalcAvg(teams));
+  }
+
+  function removeFromTeam(teamIdx, playerIdx) {
+    const teams = localTeams.map(t => ({ ...t, players: [...t.players] }));
+    teams[teamIdx].players.splice(playerIdx, 1);
+    setLocalTeams(recalcAvg(teams));
+  }
+
+  function assignPlayer(player, toTeamIdx) {
+    const teams = localTeams.map(t => ({ ...t, players: [...t.players] }));
+    teams[toTeamIdx].players.push(player);
+    setLocalTeams(recalcAvg(teams));
   }
 
   async function handleStartGame() {
@@ -168,17 +203,53 @@ function PlayersTab({ league, state, allPlayers, onGameStart }) {
         }
       </div>
 
+      <div style={{ display:'flex', gap:6 }}>
+        {[['auto','Auto Balance'],['manual','Pick Manually']].map(([id,label]) => (
+          <button key={id} onClick={()=>switchMode(id)}
+            style={{
+              padding:'8px 16px', fontSize:'.9rem', fontWeight:700, borderRadius:20,
+              background: mode===id ? '#1d4ed8' : '#1e293b',
+              color: mode===id ? '#fff' : '#64748b',
+              border: mode===id ? 'none' : '1px solid #334155',
+            }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div style={{ display:'flex', gap:12, alignItems:'flex-end', flexWrap:'wrap' }}>
-        <div>
-          <label style={{ display:'block', marginBottom:6, color:'#94a3b8', fontSize:'.9rem' }}>Players per team</label>
-          <input type="number" value={ppt} min={1} max={10} onChange={e=>setPpt(Number(e.target.value))}
-            style={{ width:80, padding:'8px 10px', fontSize:'1rem' }} />
-        </div>
-        <button onClick={handleFormTeams} disabled={loading==='form' || signedUp.length < ppt*2}
-          style={{ background:'#0284c7', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:600 }}>
-          {loading==='form' ? 'Forming…' : 'Form Teams'}
-        </button>
-        {pendingTeams.length >= 2 && (
+        {mode === 'auto' ? (
+          <>
+            <div>
+              <label style={{ display:'block', marginBottom:6, color:'#94a3b8', fontSize:'.9rem' }}>Players per team</label>
+              <input type="number" value={ppt} min={1} max={10} onChange={e=>setPpt(Number(e.target.value))}
+                style={{ width:80, padding:'8px 10px', fontSize:'1rem' }} />
+            </div>
+            <button onClick={handleFormTeams} disabled={loading==='form' || signedUp.length < 2}
+              style={{ background:'#0284c7', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:600 }}>
+              {loading==='form' ? 'Forming…' : 'Form Teams'}
+            </button>
+          </>
+        ) : (
+          <>
+            <div>
+              <label style={{ display:'block', marginBottom:6, color:'#94a3b8', fontSize:'.9rem' }}>Number of teams</label>
+              <input type="number" value={numTeams} min={2} max={12} onChange={e=>setNumTeams(Number(e.target.value))}
+                style={{ width:80, padding:'8px 10px', fontSize:'1rem' }} />
+            </div>
+            <button onClick={handleCreateManualTeams} disabled={signedUp.length < 2}
+              style={{ background:'#0284c7', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:600 }}>
+              Create Teams
+            </button>
+          </>
+        )}
+        {pendingTeams.length > 0 && (
+          <button onClick={()=>setLocalTeams(null)}
+            style={{ background:'#1e293b', color:'#94a3b8', padding:'10px 16px', fontSize:'.9rem', border:'1px solid #334155' }}>
+            Cancel
+          </button>
+        )}
+        {canStart && (
           <button onClick={handleStartGame} disabled={!!loading}
             style={{ background:'#16a34a', color:'#fff', padding:'10px 20px', fontSize:'1rem', fontWeight:700 }}>
             {loading==='start' ? 'Starting…' : '▶ Start Game'}
@@ -196,6 +267,9 @@ function PlayersTab({ league, state, allPlayers, onGameStart }) {
               <div key={ti} style={{ background:'#1e293b', borderRadius:10, padding:14 }}>
                 <div style={{ fontWeight:700, marginBottom:6, color:'#38bdf8' }}>{team.name}</div>
                 <div style={{ color:'#94a3b8', fontSize:'.8rem', marginBottom:10 }}>Avg: {Number(team.avg_rating).toFixed(1)}</div>
+                {team.players.length === 0 && (
+                  <div style={{ color:'#475569', fontSize:'.85rem', marginBottom:6 }}>No players yet.</div>
+                )}
                 {team.players.map((p, pi) => (
                   <div key={p.id} style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
                     <span style={{ flex:1, fontSize:'.9rem' }}>{p.name} <span style={{ color:'#64748b' }}>{Number(p.rating).toFixed(1)}</span></span>
@@ -207,20 +281,36 @@ function PlayersTab({ league, state, allPlayers, onGameStart }) {
                           →{String.fromCharCode(65+oti)}
                         </button>
                       ))}
+                      <button onClick={()=>removeFromTeam(ti, pi)}
+                        style={{ background:'#334155', color:'#f87171', padding:'2px 7px', fontSize:'.75rem', borderRadius:5 }}
+                        title="Remove from team">
+                        ✕
+                      </button>
                     </div>
                   </div>
                 ))}
               </div>
             ))}
           </div>
-          {waitlist.length > 0 && (
+          {unassigned.length > 0 && (
             <div style={{ marginTop:12, background:'#1e293b', borderRadius:10, padding:14 }}>
-              <div style={{ color:'#f59e0b', fontWeight:700, marginBottom:8 }}>Waitlist</div>
-              {waitlist.map(p => (
-                <span key={p.id} style={{ display:'inline-block', margin:'3px', background:'#292524', padding:'4px 10px', borderRadius:14, fontSize:'.85rem', color:'#a8a29e' }}>
-                  {p.name} {Number(p.rating).toFixed(1)}
-                </span>
-              ))}
+              <div style={{ color:'#f59e0b', fontWeight:700, marginBottom:8 }}>Unassigned</div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {unassigned.map(p => (
+                  <div key={p.id} style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <span style={{ flex:1, fontSize:'.9rem' }}>{p.name} <span style={{ color:'#64748b' }}>{Number(p.rating).toFixed(1)}</span></span>
+                    <div style={{ display:'flex', gap:3 }}>
+                      {pendingTeams.map((t, ti) => (
+                        <button key={ti} onClick={()=>assignPlayer(p, ti)}
+                          style={{ background:'#334155', color:'#94a3b8', padding:'2px 7px', fontSize:'.75rem', borderRadius:5 }}
+                          title={`Assign to ${t.name}`}>
+                          →{String.fromCharCode(65+ti)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

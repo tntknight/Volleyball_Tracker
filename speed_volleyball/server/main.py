@@ -14,9 +14,28 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as db
 from game_logic import GameState, form_teams, Team
-from config import DEFAULT_PLAYERS_PER_TEAM
+from config import DEFAULT_PLAYERS_PER_TEAM, RATING_SCALE
 
 CLIENT_DIR = Path(__file__).parent.parent / "client"
+
+
+# ── Rating scale conversion (backend stores 1-1000, frontend shows 1-10) ──────
+
+def _player_to_frontend(player: dict) -> dict:
+    d = dict(player)
+    d["rating"] = round(d["rating"] / RATING_SCALE, 2)
+    return d
+
+
+def _players_to_frontend(players: list) -> list:
+    return [_player_to_frontend(p) for p in players]
+
+
+def _history_to_frontend(entry: dict) -> dict:
+    d = dict(entry)
+    d["old_rating"] = round(d["old_rating"] / RATING_SCALE, 2)
+    d["new_rating"] = round(d["new_rating"] / RATING_SCALE, 2)
+    return d
 
 # Per-league game states, keyed by league id (populated lazily)
 game_states: dict[int, GameState] = {}
@@ -87,8 +106,8 @@ def _build_payload() -> dict:
     for league in leagues:
         lid = league["id"]
         gs = _league_state(lid).to_dict()
-        gs["signed_up"] = db.get_signed_up_players(lid)
-        gs["players"] = db.get_all_players_for_league(lid)
+        gs["signed_up"] = _players_to_frontend(db.get_signed_up_players(lid))
+        gs["players"] = _players_to_frontend(db.get_all_players_for_league(lid))
         states[str(lid)] = gs
     return {
         "leagues": leagues,
@@ -180,7 +199,7 @@ async def api_add_league(body: NewLeagueBody):
 
 @app.get("/api/players")
 def api_get_players():
-    return db.get_all_players()
+    return _players_to_frontend(db.get_all_players())
 
 
 class NewPlayerBody(BaseModel):
@@ -192,9 +211,9 @@ class NewPlayerBody(BaseModel):
 async def api_add_player(body: NewPlayerBody):
     if not body.name.strip():
         raise HTTPException(400, "Name is required")
-    player = db.add_new_player(body.name.strip(), body.rating)
+    player = db.add_new_player(body.name.strip(), body.rating * RATING_SCALE)
     await broadcast_state()
-    return player
+    return _player_to_frontend(player)
 
 
 # ── REST — Players (league-scoped — live ratings) ─────────────────────────────
@@ -202,7 +221,7 @@ async def api_add_player(body: NewPlayerBody):
 @app.get("/api/leagues/{league_id}/players")
 def api_get_league_players(league_id: int):
     _require_league(league_id)
-    return db.get_all_players_for_league(league_id)
+    return _players_to_frontend(db.get_all_players_for_league(league_id))
 
 
 class UpdateLeaguePlayerBody(BaseModel):
@@ -213,17 +232,18 @@ class UpdateLeaguePlayerBody(BaseModel):
 @app.put("/api/leagues/{league_id}/players/{player_id}")
 async def api_update_league_player(league_id: int, player_id: int, body: UpdateLeaguePlayerBody):
     _require_league(league_id)
-    player = db.update_player_for_league(player_id, league_id, name=body.name, rating=body.rating)
+    backend_rating = body.rating * RATING_SCALE if body.rating is not None else None
+    player = db.update_player_for_league(player_id, league_id, name=body.name, rating=backend_rating)
     if not player:
         raise HTTPException(404, "Player not found")
     await broadcast_state()
-    return player
+    return _player_to_frontend(player)
 
 
 @app.get("/api/leagues/{league_id}/players/{player_id}/history")
 def api_league_rating_history(league_id: int, player_id: int):
     _require_league(league_id)
-    return db.get_league_rating_history(player_id, league_id)
+    return [_history_to_frontend(h) for h in db.get_league_rating_history(player_id, league_id)]
 
 
 # ── REST — Sign-ups (league-scoped) ───────────────────────────────────────────
@@ -231,7 +251,7 @@ def api_league_rating_history(league_id: int, player_id: int):
 @app.get("/api/leagues/{league_id}/signups")
 def api_get_signups(league_id: int):
     _require_league(league_id)
-    return db.get_signed_up_players(league_id)
+    return _players_to_frontend(db.get_signed_up_players(league_id))
 
 
 @app.post("/api/leagues/{league_id}/signups/{player_id}")
@@ -254,12 +274,12 @@ class FormTeamsBody(BaseModel):
 async def api_form_teams(league_id: int, body: FormTeamsBody):
     _require_league(league_id)
     players = db.get_signed_up_players(league_id)
-    if len(players) < body.players_per_team * 2:
+    if len(players) < 2:
         raise HTTPException(400, "Not enough signed-up players to form 2 teams")
     teams, waitlist = form_teams(players, body.players_per_team)
     _league_state(league_id).set_pending_teams(teams)
     await broadcast_state()
-    return {"teams": [t.to_dict() for t in teams], "waitlist": waitlist}
+    return {"teams": [t.to_dict() for t in teams], "waitlist": _players_to_frontend(waitlist)}
 
 
 class StartTeamDef(BaseModel):
@@ -318,8 +338,8 @@ async def api_reset(league_id: int):
 def api_game_state(league_id: int):
     _require_league(league_id)
     gs = _league_state(league_id).to_dict()
-    gs["signed_up"] = db.get_signed_up_players(league_id)
-    gs["players"] = db.get_all_players_for_league(league_id)
+    gs["signed_up"] = _players_to_frontend(db.get_signed_up_players(league_id))
+    gs["players"] = _players_to_frontend(db.get_all_players_for_league(league_id))
     return gs
 
 

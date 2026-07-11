@@ -1,8 +1,9 @@
+import random
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List
 
-from config import RATING_FLOOR, WIN_SCORE
+from config import RATING_FLOOR, RATING_SCALE, TEAM_FORM_JITTER, WIN_SCORE
 from elo import calculate_elo
 from database import update_league_rating
 
@@ -20,43 +21,56 @@ class Team:
         return sum(p["rating"] for p in self.players) / len(self.players)
 
     def to_dict(self) -> dict:
+        """Serializes ratings on the frontend's 1-10 scale; internally they're stored 1-1000."""
         return {
             "name": self.name,
             "players": [
-                {"id": p["id"], "name": p["name"], "rating": round(float(p["rating"]), 1)}
+                {"id": p["id"], "name": p["name"], "rating": round(float(p["rating"]) / RATING_SCALE, 1)}
                 for p in self.players
             ],
             "score": self.score,
-            "avg_rating": round(self.avg_rating, 1),
+            "avg_rating": round(self.avg_rating / RATING_SCALE, 1),
         }
 
 
 def form_teams(players: list, players_per_team: int):
+    """Splits every signed-up player onto a team - nobody sits out because of
+    leftover remainder math. Pools of 6 or fewer always become exactly 2 teams;
+    larger pools use players_per_team to size the teams, with any remainder
+    spread across teams as one extra player each (uneven counts) rather than
+    waitlisting them."""
     if players_per_team < 1:
         players_per_team = 1
 
-    sorted_players = sorted(players, key=lambda p: p["rating"], reverse=True)
-    num_teams = len(sorted_players) // players_per_team
+    total = len(players)
+    if total < 2:
+        return [], list(players)
 
-    if num_teams < 2:
-        return [], list(sorted_players)
+    num_teams = 2 if total <= 6 else max(2, total // players_per_team)
+
+    sorted_players = sorted(
+        players,
+        key=lambda p: p["rating"] + random.uniform(-TEAM_FORM_JITTER, TEAM_FORM_JITTER),
+        reverse=True,
+    )
+
+    base_size = total // num_teams
+    max_size = base_size + (1 if total % num_teams else 0)
 
     slots = [[] for _ in range(num_teams)]
     totals = [0.0] * num_teams
 
-    for player in sorted_players[: num_teams * players_per_team]:
-        idx = totals.index(min(totals))
+    for player in sorted_players:
+        idx = min((i for i in range(num_teams) if len(slots[i]) < max_size), key=lambda i: totals[i])
         slots[idx].append(player)
         totals[idx] += player["rating"]
-
-    waitlist = sorted_players[num_teams * players_per_team :]
 
     teams = []
     for i, slot in enumerate(slots):
         label = chr(65 + i) if i < 26 else str(i + 1)
         teams.append(Team(name=f"Team {label}", players=slot))
 
-    return teams, waitlist
+    return teams, []
 
 
 class GameState:
@@ -95,7 +109,7 @@ class GameState:
         loser = self.on_court[losing_idx]
 
         winner.score += 1
-        game_over = winner.score >= WIN_SCORE
+        game_over = winner.score >= WIN_SCORE and winner.score - loser.score >= 2
 
         if game_over:
             w_delta, l_delta = calculate_elo(winner.avg_rating, loser.avg_rating)
@@ -103,19 +117,19 @@ class GameState:
             for p in winner.players:
                 new_r = max(RATING_FLOOR, p["rating"] + w_delta)
                 update_league_rating(p["id"], league_id, new_r)
-                deltas.append({"player_name": p["name"], "delta": round(w_delta, 2)})
+                deltas.append({"player_name": p["name"], "delta": round(w_delta / RATING_SCALE, 2)})
                 p["rating"] = new_r
             for p in loser.players:
                 new_r = max(RATING_FLOOR, p["rating"] + l_delta)
                 update_league_rating(p["id"], league_id, new_r)
-                deltas.append({"player_name": p["name"], "delta": round(l_delta, 2)})
+                deltas.append({"player_name": p["name"], "delta": round(l_delta / RATING_SCALE, 2)})
                 p["rating"] = new_r
             self.last_rating_deltas = deltas
             winner.score = 0
+            loser.score = 0
         else:
             self.last_rating_deltas = []
 
-        loser.score = 0
         if self.queue:
             next_team = self.queue.popleft()
             self.queue.append(loser)

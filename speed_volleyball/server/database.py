@@ -75,6 +75,19 @@ def init_db():
     for name in DEFAULT_LEAGUES:
         c.execute("INSERT OR IGNORE INTO League (name) VALUES (?)", (name,))
 
+    c.execute("""CREATE TABLE IF NOT EXISTS Meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+
+    # One-time migration: ratings used to be stored on the 1-10 frontend scale;
+    # the backend now stores them on a 1-1000 scale (RATING_SCALE in config.py).
+    if not c.execute("SELECT 1 FROM Meta WHERE key='rating_scale_v2'").fetchone():
+        c.execute("UPDATE Player SET rating = rating * 100")
+        c.execute("UPDATE LeagueRating SET rating = rating * 100")
+        c.execute("UPDATE RatingHistory SET old_rating = old_rating * 100, new_rating = new_rating * 100")
+        c.execute("INSERT INTO Meta (key, value) VALUES ('rating_scale_v2', '1')")
+
     c.commit()
     c.close()
 
